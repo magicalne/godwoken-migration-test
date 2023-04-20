@@ -26,9 +26,8 @@ cargo run --bin migrator -- --config devtools/chain/devnet/migrator_axon_config.
 ```
 
 
-##
+## Easist way to test.
 
-Easist way to test.
 - Deploy the target contract on godwoken devnet.
 - Submit a tx to mutate state.
 - Wait on godwoken producing blocks until a target height.
