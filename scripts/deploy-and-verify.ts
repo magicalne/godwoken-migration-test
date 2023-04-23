@@ -1,6 +1,10 @@
 import { ethers, network, config} from "hardhat";
 import fetch from "cross-fetch"
 import { expect } from "chai";
+import { NetworkConfig } from "hardhat/types";
+import { JsonRpcProvider } from "@ethersproject/providers";
+import { PopulatedTransaction } from "@ethersproject/contracts";
+import { ConnectionInfo } from "ethers/lib/utils";
 
 
 async function getGwHashByEthTxHash(txHash: string) {
@@ -25,15 +29,47 @@ async function getGwHashByEthTxHash(txHash: string) {
   return resBody.result
 }
 
-async function debugReplayTx(gwHash: string) {
+interface SMTStat { 
+  update_kvs: number;
+  update_milliseconds: number; 
+}
+
+interface Event {
+  address: string | null;
+  id: number;
+  key: string;
+  type: "account_state" | "account_nonce" | "log" | "create" | "destroy";
+  value: string;
+}
+
+enum TransactionType {
+  Meta = 'meta',
+  Sudt = 'sudt', 
+  AddressRegistry = 'addressRegistry',
+  Eth = 'eth',
+  Deposit = 'deposit',
+  Withdrawal = 'withdrawal'
+}
+interface Transaction {
+  events: Event[];
+  tx_hash: string;
+  type: TransactionType;
+}
+
+interface StateChange {
+  smt_stat: SMTStat;
+  transactions: Transaction[]; 
+}
+
+async function getStateChange(gwHash: string) : Promise<null | StateChange> {
   const request = {
-    method: "gw_debug_replay_transaction",
+    method: "gw_state_changes_by_block",
     params: [gwHash],
     jsonrpc: "2.0",
     id: 1
   };
   const requestBody = JSON.stringify(request);
-  const res = await fetch(`http://localhost:8024/instant-finality-hack`, {
+  const res = await fetch(`http://localhost:8119/instant-finality-hack`, {
     method: 'POST',
   headers: {
     "Content-Type": "application/json"
@@ -41,18 +77,42 @@ async function debugReplayTx(gwHash: string) {
   body: requestBody
   })
   const resBody: any = await res.json()
-  console.log(`resBody: ${JSON.stringify(resBody)}`)
   if (resBody.error) {
     throw new Error(resBody.error.message)
   }
-  return resBody.result
+  if (resBody.result == null) {
+    return null
+  }
+  return resBody.result as StateChange
+}
+
+async function compareStateChange(stateChange: StateChange, axonProvider: JsonRpcProvider) {
+  console.log(`state change: ${JSON.stringify(stateChange.smt_stat)}`)
+  for (let tx of stateChange.transactions) {
+    console.log(`tx: ${tx.type}`)
+    if (tx.type != TransactionType.Eth) {
+      continue
+    }
+    for (let event of tx.events) {
+      if (event.type == "account_state") {
+        if (event.address == null) {
+          // TODO: How to comapre state change without address for eth tx?
+          //throw new Error("address is null")
+          continue
+        }
+        let v = await axonProvider.getStorageAt(event.address, event.key, "latest")
+        console.log(`type: ${event.type} key: ${event.key}, key: ${event.value}, actual value: ${v}`)
+        expect(v, "Compare state K-V").to.equal(event.value)
+      }
+    }
+  }
 }
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function assertState(gwProvider, axonProvider, rawTx) {
+async function assertState(gwProvider: JsonRpcProvider, axonProvider: JsonRpcProvider, rawTx: PopulatedTransaction) {
   let resOnGodwoken = await gwProvider.call(rawTx)
   let resOnAxon = await axonProvider.call(rawTx)
   expect(resOnGodwoken, "Test bool.").to.equal(resOnAxon)
@@ -61,8 +121,7 @@ async function assertState(gwProvider, axonProvider, rawTx) {
 async function main() {
   console.log(network.name)
 
-  const axon = config.networks.axon_local_devnet
-  console.log(`networks: ${JSON.stringify(axon)}`)
+  const axon: NetworkConfig = config.networks.axon_local_devnet
 
   const [deployer] = await ethers.getSigners();
   console.log(`deployer: ${deployer.address}`)
@@ -71,12 +130,18 @@ async function main() {
   const ChainCompatibilityTest = await ethers.getContractFactory("ChainCompatibilityTest");
   const chainCompatibilityTest = await ChainCompatibilityTest.deploy()
   await chainCompatibilityTest.deployed()
+  console.log(`contract address: ${chainCompatibilityTest.address}`)
   const tx = await chainCompatibilityTest.mutate()
   console.log(`eth tx hash: ${JSON.stringify(tx.hash)}`)
 
   const receipt = await tx.wait()
+  const blockHash = receipt.blockHash
+  console.log(`blockHash: ${JSON.stringify(blockHash)}`)
 
-  const axonProvider = new ethers.providers.JsonRpcProvider(axon)
+  const gwHash = await getGwHashByEthTxHash(tx.hash)
+  console.log(`gw tx hash: ${JSON.stringify(gwHash)}`)
+
+  const axonProvider = new ethers.providers.JsonRpcProvider(axon as ConnectionInfo)
   // Wait on migration. Make sure the contract and mutate tx are on axon.
   while (true) {
     if (await axonProvider.getBlockNumber() > receipt.blockNumber + 1) {
@@ -89,7 +154,12 @@ async function main() {
     }
     await sleep(1000)
   }
-    
+  const stateChange = await getStateChange(blockHash)
+
+  if (stateChange == null) {
+    throw new Error("state change is null")
+  }
+  await compareStateChange(stateChange, axonProvider)
   const receiptOnAxon = await axonProvider.getTransactionReceipt(tx.hash)
   expect(receiptOnAxon, "Lookup tx receipt.").not.undefined
   const code = await axonProvider.getCode(chainCompatibilityTest.address)
@@ -97,9 +167,9 @@ async function main() {
 
   const balanceOnGodwoken = await deployer.getBalance()
   const balanceOnAxon = await axonProvider.getBalance(deployer.address)
-  expect(balanceOnGodwoken, "The balance should be migrated to axon.").to.equal(balanceOnAxon)
+  expect(balanceOnGodwoken, `The balance of ${deployer.address} should be migrated to axon.`).to.equal(balanceOnAxon)
 
-  let rawTx = await chainCompatibilityTest.populateTransaction.getBool()
+  let rawTx: PopulatedTransaction = await chainCompatibilityTest.populateTransaction.getBool()
   await assertState(ethers.provider, axonProvider, rawTx)
   rawTx = await chainCompatibilityTest.populateTransaction.getInt()
   await assertState(ethers.provider, axonProvider, rawTx)
