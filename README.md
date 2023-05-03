@@ -40,6 +40,10 @@ npm install
 npx hardhat run scripts/deploy-and-verify.ts --network gw_devnet
 ```
 
-### Compare Key-Value in godwoken directly
+### Compare Key-Value between godwoken and axon directly
 
-TODO: get write data hashs from the result of a transaction
+Get block state change with RPC from godwoken: `gw_state_changes_by_block`.
+Get tx state change with RPC from axon: `debug_call`.
+
+The `debug_call` is a modified version of `eth_call`.
+
