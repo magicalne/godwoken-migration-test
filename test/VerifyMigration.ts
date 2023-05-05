@@ -14,7 +14,7 @@ async function getGwHashByEthTxHash(txHash: string) {
     id: 1
   };
   const requestBody = JSON.stringify(request);
-  const res = await fetch(`http://localhost:8024/instant-finality-hack`, {
+  const res = await fetch(`${process.env.GODWOKEN_WEB3}/instant-finality-hack`, {
     method: 'POST',
   headers: {
     "Content-Type": "application/json"
@@ -68,7 +68,7 @@ async function getStateChangeFromGw(gwHash: string) : Promise<null | GodwokenBlo
     id: 1
   };
   const requestBody = JSON.stringify(request);
-  const res = await fetch(`http://localhost:8119/instant-finality-hack`, {
+  const res = await fetch(`${process.env.GODWOKEN_FULLNODE_URL}/instant-finality-hack`, {
     method: 'POST',
   headers: {
     "Content-Type": "application/json"
@@ -95,7 +95,7 @@ async function getStateChangeFromAxon(ethCall: PopulatedTransaction, blockNumber
   };
   console.log(`request: ${JSON.stringify(request), null, 2}`)
   const requestBody = JSON.stringify(request);
-  const res = await fetch(`http://localhost:8000`, {
+  const res = await fetch(process.env.AXON_URL!, {
     method: 'POST',
   headers: {
     "Content-Type": "application/json"
